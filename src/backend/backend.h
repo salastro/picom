@@ -115,6 +115,16 @@ struct dual_kawase_blur_args {
 	int strength;
 };
 
+struct liquid_glass_blur_args {
+	double refraction;
+	double bezel;
+	double chromatic_aberration;
+	double frost;
+	double highlight;
+	double tint;
+	double saturation;
+};
+
 typedef struct {
 	// Intentionally left blank
 } *image_handle;

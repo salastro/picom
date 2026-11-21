@@ -191,6 +191,9 @@ enum blur_method parse_blur_method(const char *src) {
 	if (strcmp(src, "gaussian") == 0) {
 		return BLUR_METHOD_GAUSSIAN;
 	}
+	if (strcmp(src, "liquid_glass") == 0) {
+		return BLUR_METHOD_LIQUID_GLASS;
+	}
 	if (strcmp(src, "kernel") == 0) {
 		return BLUR_METHOD_KERNEL;
 	}
@@ -908,6 +911,16 @@ char *parse_config(options_t *opt, const char *config_file, bool *shadow_enable,
 	    .blur_radius = 3,
 	    .blur_deviation = 0.84089642,
 	    .blur_strength = 5,
+	    .liquid_glass =
+	        {
+	            .refraction = 24,
+	            .bezel = 28,
+	            .chromatic_aberration = 0.25,
+	            .frost = 0,
+	            .highlight = 0.4,
+	            .tint = 0.04,
+	            .saturation = 1.15,
+	        },
 	    .blur_background_frame = false,
 	    .blur_background_fixed = false,
 	    .blur_background_blacklist = NULL,

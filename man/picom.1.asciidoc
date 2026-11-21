@@ -481,8 +481,8 @@ Available options of the 'blur' section are: ::
 
   *method*:::
     A string. Controls the blur method. Corresponds to the *--blur-method* command line option. Available choices are:
-      'none' to disable blurring; 'gaussian' for gaussian blur; 'box' for box blur; 'kernel' for convolution blur with a custom kernel; 'dual_kawase' for dual-filter kawase blur.
-    Note: 'gaussian', 'box' and 'dual_kawase' blur methods are not supported by the legacy backends.
+      'none' to disable blurring; 'gaussian' for gaussian blur; 'box' for box blur; 'kernel' for convolution blur with a custom kernel; 'dual_kawase' for dual-filter kawase blur; 'liquid_glass' for a clear, refractive glass pane shaped like the window (see the 'liquid_glass' options below).
+    Note: 'gaussian', 'box', 'dual_kawase' and 'liquid_glass' blur methods are not supported by the legacy backends. 'dual_kawase' and 'liquid_glass' are only supported by the 'glx' and 'egl' backends.
     (default: none)
 
   *size*:::
@@ -496,6 +496,27 @@ Available options of the 'blur' section are: ::
 
   *kernel*:::
     A string. The kernel to use for the 'kernel' blur method, specified in the same format as the *--blur-kern* option. Corresponds to the *--blur-kern* command line option.
+
+  *refraction*:::
+    A floating point number. 'liquid_glass' only. How far, in pixels, the background is bent at the very edge of the glass. Positive values bend it toward the center like a magnifying lens; negative values bend it outward. Corresponds to *--glass-refraction* (default: 24).
+
+  *bezel*:::
+    A floating point number. 'liquid_glass' only. Width in pixels of the curved rim of the glass. Inside the rim the glass is flat and the background shows through undistorted. Corresponds to *--glass-bezel* (default: 28).
+
+  *chromatic-aberration*:::
+    A floating point number in the range 0-1. 'liquid_glass' only. Splits colors along the rim. Corresponds to *--glass-chromatic-aberration* (default: 0.25).
+
+  *frost*:::
+    A floating point number in the range 0-50. 'liquid_glass' only. Radius in pixels of a gaussian blur applied to the background before it is refracted, which frosts the glass; 0 keeps it perfectly clear. Corresponds to *--glass-frost* (default: 0).
+
+  *highlight*:::
+    A floating point number in the range 0-1. 'liquid_glass' only. Strength of the specular highlight on the rim, lit from the top left. Corresponds to *--glass-highlight* (default: 0.4).
+
+  *tint*:::
+    A floating point number in the range 0-1. 'liquid_glass' only. How much the glass is tinted toward white. Corresponds to *--glass-tint* (default: 0.04).
+
+  *saturation*:::
+    A floating point number in the range 0-4. 'liquid_glass' only. Saturation multiplier of the background seen through the glass. Corresponds to *--glass-saturation* (default: 1.15).
 
 SIGNALS
 -------

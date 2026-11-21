@@ -679,6 +679,7 @@ static bool initialize_blur(session_t *ps) {
 	struct gaussian_blur_args gargs;
 	struct box_blur_args bargs;
 	struct dual_kawase_blur_args dkargs;
+	struct liquid_glass_blur_args lgargs;
 
 	void *args = NULL;
 	switch (ps->o.blur_method) {
@@ -700,6 +701,18 @@ static bool initialize_blur(session_t *ps) {
 		dkargs.size = ps->o.blur_radius;
 		dkargs.strength = ps->o.blur_strength;
 		args = (void *)&dkargs;
+		break;
+	case BLUR_METHOD_LIQUID_GLASS:
+		lgargs = (struct liquid_glass_blur_args){
+		    .refraction = ps->o.liquid_glass.refraction,
+		    .bezel = ps->o.liquid_glass.bezel,
+		    .chromatic_aberration = ps->o.liquid_glass.chromatic_aberration,
+		    .frost = ps->o.liquid_glass.frost,
+		    .highlight = ps->o.liquid_glass.highlight,
+		    .tint = ps->o.liquid_glass.tint,
+		    .saturation = ps->o.liquid_glass.saturation,
+		};
+		args = (void *)&lgargs;
 		break;
 	default: return true;
 	}

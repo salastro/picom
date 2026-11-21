@@ -1,4 +1,5 @@
 #include <locale.h>
+#include <math.h>
 #include <stdbool.h>
 
 #include <backend/backend.h>
@@ -33,6 +34,14 @@ struct gl_blur_context {
 	int resize_width, resize_height;
 
 	int npasses;
+
+	/// Uniform locations of the liquid glass shader, and the parameters fed to it
+	struct {
+		GLint glass_rect, glass_radius;
+		/// Uniform location of the direction of the gaussian frost pass
+		GLint frost_direction;
+		struct liquid_glass_blur_args args;
+	} glass;
 };
 
 /**
@@ -256,6 +265,113 @@ bool gl_dual_kawase_blur(double opacity, struct gl_blur_context *bctx, const rec
 	return true;
 }
 
+/**
+ * Render a refractive "liquid glass" pane over the given region.
+ *
+ * Pass 0 copies the (resized) region of the back buffer into a temporary texture,
+ * since we can't sample from the texture we are drawing into. If frosting is
+ * enabled, that copy is then blurred with a separable gaussian (horizontal into
+ * the second texture, vertical back into the first). The last pass samples the
+ * result with displaced coordinates derived from the shape of the window, and
+ * draws it into the back buffer, limited by the window mask.
+ */
+static bool gl_liquid_glass_draw_into(struct gl_blur_context *bctx, int texture_index) {
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bctx->blur_fbos[0]);
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+	                       bctx->blur_textures[texture_index], 0);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+	return gl_check_fb_complete(GL_FRAMEBUFFER);
+}
+
+bool gl_liquid_glass_blur(double opacity, struct gl_blur_context *bctx, const rect_t *extent,
+                          const rect_t *glass_extent, struct backend_image *mask,
+                          coord_t mask_dst, const GLuint vao[2], const int vao_nelems[2],
+                          GLuint source_texture, geometry_t source_size attr_unused,
+                          GLuint target_fbo, GLuint default_mask) {
+	int dst_y_fb_coord = bctx->fb_height - extent->y2;
+
+	// Pass 0: copy
+	const gl_blur_shader_t *copy_pass = &bctx->blur_shader[0];
+	assert(copy_pass->prog);
+	glUseProgram(copy_pass->prog);
+	glUniform2f(copy_pass->texorig_loc, (GLfloat)extent->x1, (GLfloat)dst_y_fb_coord);
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, source_texture);
+
+	if (!gl_liquid_glass_draw_into(bctx, 0)) {
+		return false;
+	}
+
+	glBindVertexArray(vao[1]);
+	glDrawElements(GL_TRIANGLES, vao_nelems[1], GL_UNSIGNED_INT, NULL);
+
+	auto tex_size = bctx->texture_sizes[0];
+
+	// Optional gaussian frost: horizontal 0 -> 1, then vertical 1 -> 0
+	const gl_blur_shader_t *frost_pass = &bctx->blur_shader[2];
+	if (frost_pass->prog) {
+		glUseProgram(frost_pass->prog);
+		glUniform2f(frost_pass->texorig_loc, (GLfloat)extent->x1,
+		            (GLfloat)dst_y_fb_coord);
+		glUniform2f(frost_pass->uniform_pixel_norm, 1.0F / (GLfloat)tex_size.width,
+		            1.0F / (GLfloat)tex_size.height);
+		for (int i = 0; i < 2; i++) {
+			glBindTexture(GL_TEXTURE_2D, bctx->blur_textures[i]);
+			if (!gl_liquid_glass_draw_into(bctx, !i)) {
+				return false;
+			}
+			glUniform2f(bctx->glass.frost_direction, i == 0 ? 1.0F : 0.0F,
+			            i == 0 ? 0.0F : 1.0F);
+			glDrawElements(GL_TRIANGLES, vao_nelems[1], GL_UNSIGNED_INT, NULL);
+		}
+	}
+
+	// Last pass: refraction
+	const gl_blur_shader_t *glass_pass = &bctx->blur_shader[1];
+	assert(glass_pass->prog);
+	glUseProgram(glass_pass->prog);
+	glUniform2f(glass_pass->texorig_loc, (GLfloat)extent->x1, (GLfloat)dst_y_fb_coord);
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, bctx->blur_textures[0]);
+	glUniform2f(glass_pass->uniform_pixel_norm, 1.0F / (GLfloat)tex_size.width,
+	            1.0F / (GLfloat)tex_size.height);
+	glUniform1f(glass_pass->uniform_opacity, (GLfloat)opacity);
+
+	glActiveTexture(GL_TEXTURE1);
+	glUniform1i(glass_pass->uniform_mask_tex, 1);
+	if (mask) {
+		// The glass takes the shape of the window, which the mask describes.
+		auto inner = (struct gl_texture *)mask->inner;
+		GLfloat x = (GLfloat)mask_dst.x;
+		GLfloat y = (GLfloat)(bctx->fb_height - mask_dst.y - inner->height);
+		glBindTexture(GL_TEXTURE_2D, inner->texture);
+		glUniform1i(glass_pass->uniform_mask_inverted, mask->color_inverted);
+		glUniform1f(glass_pass->uniform_mask_corner_radius, (float)mask->corner_radius);
+		glUniform2f(glass_pass->uniform_mask_offset, x, y);
+		glUniform4f(bctx->glass.glass_rect, x, y, (GLfloat)inner->width,
+		            (GLfloat)inner->height);
+		glUniform1f(bctx->glass.glass_radius, (float)mask->corner_radius);
+	} else {
+		// No shape information, use the bounding box of the blur region
+		glBindTexture(GL_TEXTURE_2D, default_mask);
+		glUniform1i(glass_pass->uniform_mask_inverted, 0);
+		glUniform1f(glass_pass->uniform_mask_corner_radius, 0.0F);
+		glUniform2f(glass_pass->uniform_mask_offset, 0.0F, 0.0F);
+		glUniform4f(bctx->glass.glass_rect, (GLfloat)glass_extent->x1,
+		            (GLfloat)(bctx->fb_height - glass_extent->y2),
+		            (GLfloat)(glass_extent->x2 - glass_extent->x1),
+		            (GLfloat)(glass_extent->y2 - glass_extent->y1));
+		glUniform1f(bctx->glass.glass_radius, 0.0F);
+	}
+
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target_fbo);
+	glBindVertexArray(vao[0]);
+	glDrawElements(GL_TRIANGLES, vao_nelems[0], GL_UNSIGNED_INT, NULL);
+	return true;
+}
+
 bool gl_blur_impl(double opacity, struct gl_blur_context *bctx,
                   struct backend_image *mask, coord_t mask_dst, const region_t *reg_blur,
                   const region_t *reg_visible attr_unused, GLuint source_texture,
@@ -370,7 +486,11 @@ bool gl_blur_impl(double opacity, struct gl_blur_context *bctx,
 
 	int vao_nelems[2] = {nrects * 6, nrects_resized * 6};
 
-	if (bctx->method == BLUR_METHOD_DUAL_KAWASE) {
+	if (bctx->method == BLUR_METHOD_LIQUID_GLASS) {
+		ret = gl_liquid_glass_blur(opacity, bctx, extent_resized, extent, mask,
+		                           mask_dst, vao, vao_nelems, source_texture,
+		                           source_size, target_fbo, default_mask);
+	} else if (bctx->method == BLUR_METHOD_DUAL_KAWASE) {
 		ret = gl_dual_kawase_blur(opacity, bctx, extent_resized, mask, mask_dst,
 		                          vao, vao_nelems, source_texture, source_size,
 		                          target_fbo, default_mask);
@@ -828,6 +948,223 @@ out:
 	return success;
 }
 
+static void gl_blur_shader_set_projection(GLuint prog, GLfloat *projection) {
+	glUseProgram(prog);
+	int pml = glGetUniformLocationChecked(prog, "projection");
+	glUniformMatrix4fv(pml, 1, false, projection);
+	glUseProgram(0);
+}
+
+bool gl_create_liquid_glass_blur_context(void *blur_context, GLfloat *projection,
+                                         enum blur_method method, void *args) {
+	auto ctx = (struct gl_blur_context *)blur_context;
+	auto lg = (struct liquid_glass_blur_args *)args;
+
+	ctx->method = method;
+	ctx->glass.args = *lg;
+
+	// Full size textures holding a copy of the background, the second one is
+	// used as the intermediate of the separable gaussian frost
+	ctx->blur_texture_count = lg->frost > 0 ? 2 : 1;
+	ctx->blur_fbo_count = 1;
+
+	// Refracted samples can land this far away from the pixel being drawn
+	int reach =
+	    (int)ceil(fabs(lg->refraction) * (1.0 + lg->chromatic_aberration) + lg->frost) + 1;
+	ctx->resize_width = reach;
+	ctx->resize_height = reach;
+
+	// copy, glass, and the gaussian frost (only built if frost > 0)
+	ctx->npasses = 3;
+	ctx->blur_shader = ccalloc(ctx->npasses, gl_blur_shader_t);
+
+	// clang-format off
+	static const char FRAG_SHADER_COPY[] = GLSL(330,
+		uniform sampler2D tex_src;
+		in vec2 texcoord;
+		out vec4 out_color;
+		void main() {
+			out_color = vec4(texelFetch(tex_src, ivec2(texcoord), 0).rgb, 1.0);
+		}
+	);
+	static const char FRAG_SHADER_GLASS[] = GLSL(330,
+		uniform sampler2D tex_src;
+		uniform vec2 pixel_norm;
+		uniform float opacity;
+		// Origin (bottom left, framebuffer coordinates) and size of the glass pane
+		uniform vec4 glass_rect;
+		uniform float glass_radius;
+		uniform float refraction;
+		uniform float bezel;
+		uniform float chromatic_aberration;
+		uniform float highlight;
+		uniform float tint;
+		uniform float saturation;
+		in vec2 texcoord;
+		out vec4 out_color;
+		float mask_factor();
+
+		// Signed distance to a rounded rectangle centered at the origin,
+		// negative inside.
+		float glass_sdf(vec2 p, vec2 half_size, float r) {
+			vec2 q = abs(p) - half_size + vec2(r);
+			return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+		}
+
+		vec3 sample_bg(vec2 pos) {
+			return texture(tex_src, pos * pixel_norm).rgb;
+		}
+
+		void main() {
+			vec2 half_size = glass_rect.zw * 0.5;
+			vec2 p = texcoord - glass_rect.xy - half_size;
+			float r = min(glass_radius, min(half_size.x, half_size.y));
+			float d = glass_sdf(p, half_size, r);
+
+			// Outward surface normal, projected onto the screen
+			vec2 e = vec2(0.5, 0.0);
+			vec2 grad = vec2(glass_sdf(p + e.xy, half_size, r) - glass_sdf(p - e.xy, half_size, r),
+			                 glass_sdf(p + e.yx, half_size, r) - glass_sdf(p - e.yx, half_size, r));
+			float grad_len = length(grad);
+			vec2 n = grad_len > 1e-5 ? grad / grad_len : vec2(0.0);
+
+			// 0 at the edge of the glass, 1 where the flat center begins
+			float x = clamp(-d / bezel, 0.0, 1.0);
+			float edge = 1.0 - x;
+			// Sag of a circular bevel: flat in the middle, steep at the rim,
+			// which is what makes the edge bend light strongly.
+			float bend = 1.0 - sqrt(max(1.0 - edge * edge, 0.0));
+
+			vec2 offset = -n * refraction * bend;
+			vec3 col;
+			if (chromatic_aberration > 0.0) {
+				float ca = chromatic_aberration * bend;
+				col.r = sample_bg(texcoord + offset * (1.0 + ca)).r;
+				col.g = sample_bg(texcoord + offset).g;
+				col.b = sample_bg(texcoord + offset * (1.0 - ca)).b;
+			} else {
+				col = sample_bg(texcoord + offset);
+			}
+
+			float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
+			col = mix(vec3(luma), col, saturation);
+			col = mix(col, vec3(1.0), tint);
+
+			// Specular rim, lit from the top left
+			vec2 light = normalize(vec2(-0.6, 0.8));
+			float lit = max(dot(n, light), 0.0);
+			float back = max(dot(n, -light), 0.0);
+			float rim = edge * edge * edge;
+			float line = 1.0 - smoothstep(0.0, 1.5, -d);
+			col += highlight * (rim * (0.6 * lit * lit + 0.25 * back * back) +
+			                    line * (0.3 + 0.7 * max(lit, back)));
+
+			out_color = vec4(clamp(col, 0.0, 1.0), 1.0) * opacity * mask_factor();
+		}
+	);
+	// One dimension of a gaussian blur. Pairs of taps are merged into a single
+	// bilinear fetch placed between them, halving the number of samples.
+	static const char FRAG_SHADER_FROST[] = GLSL(330,
+		uniform sampler2D tex_src;
+		uniform vec2 pixel_norm;
+		uniform vec2 direction;
+		uniform float sigma;
+		uniform int radius;
+		in vec2 texcoord;
+		out vec4 out_color;
+		void main() {
+			vec2 uv = texcoord * pixel_norm;
+			vec2 step = direction * pixel_norm;
+			float k = -0.5 / (sigma * sigma);
+			vec3 sum = texture(tex_src, uv).rgb;
+			float weight_sum = 1.0;
+			for (int i = 1; i <= radius; i += 2) {
+				float w1 = exp(k * float(i * i));
+				float w2 = i + 1 <= radius ? exp(k * float((i + 1) * (i + 1))) : 0.0;
+				float w = w1 + w2;
+				float o = float(i) + w2 / w;
+				sum += w * (texture(tex_src, uv + step * o).rgb +
+				            texture(tex_src, uv - step * o).rgb);
+				weight_sum += 2.0 * w;
+			}
+			out_color = vec4(sum / weight_sum, 1.0);
+		}
+	);
+	// clang-format on
+
+	if (lg->frost > 0) {
+		auto frost_pass = &ctx->blur_shader[2];
+		frost_pass->prog =
+		    gl_create_program_from_str(vertex_shader, FRAG_SHADER_FROST);
+		if (!frost_pass->prog) {
+			log_error("Failed to create liquid glass frost program.");
+			return false;
+		}
+		glBindFragDataLocation(frost_pass->prog, 0, "out_color");
+		bind_uniform(frost_pass, pixel_norm);
+		frost_pass->texorig_loc =
+		    glGetUniformLocationChecked(frost_pass->prog, "texorig");
+		ctx->glass.frost_direction =
+		    glGetUniformLocationChecked(frost_pass->prog, "direction");
+		gl_blur_shader_set_projection(frost_pass->prog, projection);
+		// `frost` is the blur radius, cut the gaussian off at 2 sigma
+		glUseProgram(frost_pass->prog);
+		glUniform1f(glGetUniformLocationChecked(frost_pass->prog, "sigma"),
+		            (GLfloat)(lg->frost / 2.0));
+		glUniform1i(glGetUniformLocationChecked(frost_pass->prog, "radius"),
+		            (GLint)ceil(lg->frost));
+		glUseProgram(0);
+	}
+
+	auto copy_pass = &ctx->blur_shader[0];
+	copy_pass->prog = gl_create_program_from_str(vertex_shader, FRAG_SHADER_COPY);
+	if (!copy_pass->prog) {
+		log_error("Failed to create liquid glass copy program.");
+		return false;
+	}
+	glBindFragDataLocation(copy_pass->prog, 0, "out_color");
+	copy_pass->texorig_loc = glGetUniformLocationChecked(copy_pass->prog, "texorig");
+	gl_blur_shader_set_projection(copy_pass->prog, projection);
+
+	auto glass_pass = &ctx->blur_shader[1];
+	glass_pass->prog = gl_create_program_from_strv(
+	    (const char *[]){vertex_shader, NULL},
+	    (const char *[]){FRAG_SHADER_GLASS, masking_glsl, NULL});
+	if (!glass_pass->prog) {
+		log_error("Failed to create liquid glass program.");
+		return false;
+	}
+	glBindFragDataLocation(glass_pass->prog, 0, "out_color");
+	bind_uniform(glass_pass, pixel_norm);
+	bind_uniform(glass_pass, opacity);
+	bind_uniform(glass_pass, mask_tex);
+	bind_uniform(glass_pass, mask_offset);
+	bind_uniform(glass_pass, mask_inverted);
+	bind_uniform(glass_pass, mask_corner_radius);
+	glass_pass->texorig_loc =
+	    glGetUniformLocationChecked(glass_pass->prog, "texorig");
+	ctx->glass.glass_rect =
+	    glGetUniformLocationChecked(glass_pass->prog, "glass_rect");
+	ctx->glass.glass_radius =
+	    glGetUniformLocationChecked(glass_pass->prog, "glass_radius");
+
+	// The parameters don't change, set them once
+	gl_blur_shader_set_projection(glass_pass->prog, projection);
+	glUseProgram(glass_pass->prog);
+#define set_glass_uniform(name, value)                                                   \
+	glUniform1f(glGetUniformLocationChecked(glass_pass->prog, name), (GLfloat)(value))
+	set_glass_uniform("refraction", lg->refraction);
+	set_glass_uniform("bezel", lg->bezel);
+	set_glass_uniform("chromatic_aberration", lg->chromatic_aberration);
+	set_glass_uniform("highlight", lg->highlight);
+	set_glass_uniform("tint", lg->tint);
+	set_glass_uniform("saturation", lg->saturation);
+#undef set_glass_uniform
+	glUseProgram(0);
+
+	return true;
+}
+
 void *gl_create_blur_context(backend_t *base, enum blur_method method, void *args) {
 	bool success;
 	auto gd = (struct gl_data *)base;
@@ -849,7 +1186,10 @@ void *gl_create_blur_context(backend_t *base, enum blur_method method, void *arg
 	                                   {0, 0, 0, 0},
 	                                   {-1, -1, 0, 1}};
 
-	if (method == BLUR_METHOD_DUAL_KAWASE) {
+	if (method == BLUR_METHOD_LIQUID_GLASS) {
+		success = gl_create_liquid_glass_blur_context(ctx, projection_matrix[0],
+		                                              method, args);
+	} else if (method == BLUR_METHOD_DUAL_KAWASE) {
 		success = gl_create_dual_kawase_blur_context(ctx, projection_matrix[0],
 		                                             method, args);
 	} else {

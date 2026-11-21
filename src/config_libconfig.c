@@ -717,6 +717,17 @@ char *parse_config_libconfig(options_t *opt, const char *config_file, bool *shad
 
 		config_setting_lookup_float(blur_cfg, "deviation", &opt->blur_deviation);
 		config_setting_lookup_int(blur_cfg, "strength", &opt->blur_strength);
+
+		config_setting_lookup_float(blur_cfg, "refraction",
+		                            &opt->liquid_glass.refraction);
+		config_setting_lookup_float(blur_cfg, "bezel", &opt->liquid_glass.bezel);
+		config_setting_lookup_float(blur_cfg, "chromatic-aberration",
+		                            &opt->liquid_glass.chromatic_aberration);
+		config_setting_lookup_float(blur_cfg, "frost", &opt->liquid_glass.frost);
+		config_setting_lookup_float(blur_cfg, "highlight", &opt->liquid_glass.highlight);
+		config_setting_lookup_float(blur_cfg, "tint", &opt->liquid_glass.tint);
+		config_setting_lookup_float(blur_cfg, "saturation",
+		                            &opt->liquid_glass.saturation);
 	}
 
 	// --write-pid-path

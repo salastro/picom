@@ -153,7 +153,8 @@ static const struct picom_option picom_options[] = {
                                                                              "need to be able to see through transparent parts of the window."},
     {"blur-method"                 , required_argument, 328, NULL          , "The algorithm used for background bluring. Available choices are: 'none' to "
                                                                              "disable, 'gaussian', 'box' or 'kernel' for custom convolution blur with "
-                                                                             "--blur-kern. Note: 'gaussian' and 'box' is not supported by --legacy-backends."},
+                                                                             "--blur-kern, 'dual_kawase', or 'liquid_glass' for a refractive glass effect. Note: "
+                                                                             "only 'kernel' is supported by --legacy-backends."},
     {"blur-size"                   , required_argument, 329, NULL          , "The radius of the blur kernel for 'box' and 'gaussian' blur method."},
     {"blur-deviation"              , required_argument, 330, NULL          , "The standard deviation for the 'gaussian' blur method."},
     {"blur-strength"               , required_argument, 331, NULL          , "The strength level of the 'dual_kawase' blur method."},
@@ -192,6 +193,13 @@ static const struct picom_option picom_options[] = {
     {"animation-clamping"          , no_argument      , 809, NULL          , "Enable/disable animation clamping. Disabling increases performance"},
     {"animation-for-open-window"   , required_argument, 810, NULL          , "Set animation for opening window (Check sample.conf for options)."},
     {"animation-for-transient-window", required_argument, 811, NULL        , "Set animation for transient (child) windows."},
+    {"glass-refraction"            , required_argument, 820, NULL          , "Edge refraction of the 'liquid_glass' blur method, in pixels. Negative values bend outward. (default 24)"},
+    {"glass-bezel"                 , required_argument, 821, NULL          , "Width of the curved edge of the 'liquid_glass' blur method, in pixels. (default 28)"},
+    {"glass-chromatic-aberration"  , required_argument, 822, NULL          , "Chromatic aberration of the 'liquid_glass' blur method, 0-1. (default 0.25)"},
+    {"glass-frost"                 , required_argument, 823, NULL          , "Gaussian frosting blur radius of the 'liquid_glass' blur method, in pixels. 0 is fully clear. (default 0)"},
+    {"glass-highlight"             , required_argument, 824, NULL          , "Specular rim highlight of the 'liquid_glass' blur method, 0-1. (default 0.4)"},
+    {"glass-tint"                  , required_argument, 825, NULL          , "White tint of the 'liquid_glass' blur method, 0-1. (default 0.04)"},
+    {"glass-saturation"            , required_argument, 826, NULL          , "Saturation multiplier of the 'liquid_glass' blur method. (default 1.15)"},
 
 };
 // clang-format on
@@ -806,6 +814,13 @@ bool get_cfg(options_t *opt, int argc, char *const *argv, bool shadow_enable,
 			condlst_add(&opt->animation_blacklist, optarg);
 			break;
 		}
+		case 820: opt->liquid_glass.refraction = atof(optarg); break;
+		case 821: opt->liquid_glass.bezel = atof(optarg); break;
+		case 822: opt->liquid_glass.chromatic_aberration = atof(optarg); break;
+		case 823: opt->liquid_glass.frost = atof(optarg); break;
+		case 824: opt->liquid_glass.highlight = atof(optarg); break;
+		case 825: opt->liquid_glass.tint = atof(optarg); break;
+		case 826: opt->liquid_glass.saturation = atof(optarg); break;
 		default: usage(argv[0], 1); break;
 #undef P_CASEBOOL
 		}
@@ -920,6 +935,18 @@ bool get_cfg(options_t *opt, int argc, char *const *argv, bool shadow_enable,
 		                                      &opt->blur_kernel_count);
 		CHECK(opt->blur_kerns);
 		CHECK(opt->blur_kernel_count);
+	}
+
+	// Sanitize parameters for liquid glass
+	if (opt->blur_method == BLUR_METHOD_LIQUID_GLASS) {
+		auto lg = &opt->liquid_glass;
+		lg->refraction = clamp(lg->refraction, -200, 200);
+		lg->bezel = clamp(lg->bezel, 1, 500);
+		lg->chromatic_aberration = clamp(lg->chromatic_aberration, 0, 1);
+		lg->frost = clamp(lg->frost, 0, 50);
+		lg->highlight = clamp(lg->highlight, 0, 1);
+		lg->tint = clamp(lg->tint, 0, 1);
+		lg->saturation = clamp(lg->saturation, 0, 4);
 	}
 
 	// Sanitize parameters for dual-filter kawase blur

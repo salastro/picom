@@ -88,6 +88,7 @@ enum blur_method {
 	BLUR_METHOD_BOX,
 	BLUR_METHOD_GAUSSIAN,
 	BLUR_METHOD_DUAL_KAWASE,
+	BLUR_METHOD_LIQUID_GLASS,
 	BLUR_METHOD_INVALID,
 };
 
@@ -267,6 +268,25 @@ typedef struct options {
 	double blur_deviation;
 	// Strength of the dual_kawase blur
 	int blur_strength;
+	/// Parameters of the liquid_glass blur method
+	struct {
+		/// Maximum refraction displacement at the glass edge, in pixels.
+		/// Positive bends background toward the center (magnifying lens),
+		/// negative bends it outward.
+		double refraction;
+		/// Width of the curved edge (bezel) of the glass, in pixels
+		double bezel;
+		/// Strength of chromatic aberration along the edge, 0-1
+		double chromatic_aberration;
+		/// Radius of frosting blur, in pixels. 0 = perfectly clear glass
+		double frost;
+		/// Intensity of the specular rim highlight, 0-1
+		double highlight;
+		/// How much the glass is tinted toward white, 0-1
+		double tint;
+		/// Saturation multiplier of the refracted background
+		double saturation;
+	} liquid_glass;
 	/// Whether to blur background when the window frame is not opaque.
 	/// Implies blur_background.
 	bool blur_background_frame;
